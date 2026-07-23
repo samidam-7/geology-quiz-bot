@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-بوت الاختبارات - Quiz Bot
+بوت الاختبارات — Quiz Bot
 Python 3.13 + python-telegram-bot + Neon.tech PostgreSQL
 
-المواضيع المتاحة:
+المواضيع:
   - جيولوجيا        (836 سؤال)
-  - hay2_general    (296 سؤال) ─┐
-  - hay2_important  (155 سؤال)  ├─ حيوان 2
-  - hay2_drawings   (105 سؤال) ─┘
+  - hay2_general    (296 سؤال)
+  - hay2_important  (155 سؤال)
+  - hay2_drawings   (105 سؤال / 12 رسمة)
   - en_*            (أسئلة اللغة الإنجليزية)
 """
 
 import os
+import re
 import logging
 import asyncio
 from dotenv import load_dotenv
@@ -34,8 +35,6 @@ from database import (
     close_session,
     get_user_stats,
     get_leaderboard,
-    save_pending_subject,
-    get_pending_subject,
     get_subject_counts,
 )
 
@@ -63,21 +62,13 @@ if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN غير موجود في متغيرات البيئة!")
 
 # ─────────────────────────────────────────
-# تعريف المواضيع وعرضها للمستخدم
+# عناوين المواضيع
 # ─────────────────────────────────────────
-# المفاتيح في القاعدة → النص في القائمة
 SUBJECTS: dict[str, str] = {
-    "جيولوجيا":      "🪨 جيولوجيا",
-    "hay2_general":  "🦁 حيوان 2 — عام",
-    "hay2_important":"⭐ حيوان 2 — مهم",
-    "hay2_drawings": "🖼 حيوان 2 — رسوميات",
-}
-
-# مجموعات القائمة الرئيسية
-MAIN_CATEGORIES = {
-    "geo":     ("🪨 جيولوجيا",    ["جيولوجيا"]),
-    "hay2":    ("🦁 حيوان 2",     ["hay2_general", "hay2_important", "hay2_drawings"]),
-    "english": ("🇬🇧 إنجليزي",    None),   # سيُعرض قائمة فرعية
+    "جيولوجيا":       "🪨 جيولوجيا",
+    "hay2_general":   "🦁 حيوان 2 — عام",
+    "hay2_important": "⭐ حيوان 2 — مهم",
+    "hay2_drawings":  "🖼 أسئلة الرسمات",
 }
 
 ENGLISH_SUBJECTS: dict[str, str] = {
@@ -105,17 +96,71 @@ ENGLISH_SUBJECTS: dict[str, str] = {
 user_states: dict[int, dict] = {}
 
 
+# ═══════════════════════════════════════════════════════════
+# نظام تحليل أسئلة الرسمات
+# ═══════════════════════════════════════════════════════════
+
+# تنسيق السؤال: "📌 الرسمة N: عنوان الرسمة — نص السؤال"
+_DRAWING_RE = re.compile(
+    r"📌\s*الرسمة\s*(\d+)\s*[:\s]+([^—–\-]+?)\s*[—–\-]+\s*(.*)",
+    re.DOTALL,
+)
+
+
+def parse_drawing_info(question_text: str) -> tuple[int, str, str]:
+    """
+    يحلل نص السؤال ويستخرج:
+      - رقم الرسمة
+      - عنوان الرسمة
+      - نص السؤال فقط (بدون البادئة)
+    """
+    m = _DRAWING_RE.match(question_text.strip())
+    if m:
+        num   = int(m.group(1))
+        title = m.group(2).strip()
+        q_txt = m.group(3).strip()
+        return num, title, q_txt
+    return 0, "", question_text.strip()
+
+
+def group_questions_by_drawing(questions: list) -> list[dict]:
+    """
+    يجمّع الأسئلة في مجموعات حسب رقم الرسمة.
+    المُخرج: قائمة من dict:
+        { "num": int, "title": str, "questions": [q, ...] }
+    مع إضافة "q_text" لكل سؤال (النص النظيف بدون بادئة الرسمة).
+    """
+    groups: dict[int, dict] = {}
+    order: list[int] = []
+
+    for q in questions:
+        raw = q.get("question") or q.get("question_text", "")
+        num, title, clean_text = parse_drawing_info(raw)
+
+        if num not in groups:
+            groups[num] = {"num": num, "title": title, "questions": []}
+            order.append(num)
+
+        # نسخة معدّلة من السؤال بنص نظيف
+        q_copy = dict(q)
+        q_copy["q_text"] = clean_text
+        groups[num]["questions"].append(q_copy)
+
+    return [groups[n] for n in order]
+
+
 # ─────────────────────────────────────────
-# لوحة مفاتيح القائمة الرئيسية
+# لوحات المفاتيح
 # ─────────────────────────────────────────
+
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🪨 جيولوجيا",      callback_data="cat_geo")],
-        [InlineKeyboardButton("🦁 حيوان 2",        callback_data="cat_hay2")],      # ← الزر المُصلح
-        [InlineKeyboardButton("🇬🇧 إنجليزي",      callback_data="cat_english")],
-        [InlineKeyboardButton("🔁 مراجعة أخطائي", callback_data="cat_review")],
-        [InlineKeyboardButton("🏆 المتصدرون",      callback_data="leaderboard")],
-        [InlineKeyboardButton("📊 إحصائياتي",     callback_data="my_stats")],
+        [InlineKeyboardButton("🪨 جيولوجيا",       callback_data="cat_geo")],
+        [InlineKeyboardButton("🦁 حيوان 2",         callback_data="cat_hay2")],
+        [InlineKeyboardButton("🇬🇧 إنجليزي",       callback_data="cat_english")],
+        [InlineKeyboardButton("🔁 مراجعة أخطائي",  callback_data="cat_review")],
+        [InlineKeyboardButton("🏆 المتصدرون",       callback_data="leaderboard")],
+        [InlineKeyboardButton("📊 إحصائياتي",      callback_data="my_stats")],
     ])
 
 
@@ -125,88 +170,70 @@ def back_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-# ─────────────────────────────────────────
-# لوحة مفاتيح حيوان 2 (مُصلح)
-# ─────────────────────────────────────────
 def hay2_keyboard(counts: dict) -> InlineKeyboardMarkup:
-    """
-    يعرض الأقسام الثلاثة لحيوان 2 مع عدد الأسئلة.
-    هذا هو الإصلاح الرئيسي لمشكلة 'زر حيوان 2 لا يظهر محتوياته'.
-    """
     rows = []
     for subj, label in [
         ("hay2_general",   "🦁 عام"),
         ("hay2_important", "⭐ مهم"),
-        ("hay2_drawings",  "🖼 رسوميات"),
+        ("hay2_drawings",  "🖼 أسئلة الرسمات"),
     ]:
         n = counts.get(subj, 0)
-        rows.append([
-            InlineKeyboardButton(
-                f"{label}  ({n} سؤال)",
-                callback_data=f"subj_{subj}",
-            )
-        ])
+        rows.append([InlineKeyboardButton(
+            f"{label}  ({n} سؤال)",
+            callback_data=f"subj_{subj}",
+        )])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
     return InlineKeyboardMarkup(rows)
 
 
-# ─────────────────────────────────────────
-# لوحة مفاتيح الإنجليزي
-# ─────────────────────────────────────────
 def english_keyboard(counts: dict) -> InlineKeyboardMarkup:
     rows = []
     for subj, label in ENGLISH_SUBJECTS.items():
         n = counts.get(subj, 0)
-        rows.append([
-            InlineKeyboardButton(
-                f"{label} ({n})",
-                callback_data=f"subj_{subj}",
-            )
-        ])
+        rows.append([InlineKeyboardButton(
+            f"{label} ({n})", callback_data=f"subj_{subj}"
+        )])
     rows.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_main")])
     return InlineKeyboardMarkup(rows)
 
 
-# ─────────────────────────────────────────
-# لوحة مفاتيح عدد الأسئلة
-# ─────────────────────────────────────────
 def count_keyboard(subject: str) -> InlineKeyboardMarkup:
+    # الرسمات لا تحتاج خيار عدد — تُشغَّل كلها دائماً
+    if subject == "hay2_drawings":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🖼 ابدأ جميع الرسمات (12 رسمة)", callback_data=f"cnt_{subject}_0")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")],
+        ])
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("20 سؤال",  callback_data=f"cnt_{subject}_20"),
-            InlineKeyboardButton("40 سؤال",  callback_data=f"cnt_{subject}_40"),
+            InlineKeyboardButton("20 سؤال",    callback_data=f"cnt_{subject}_20"),
+            InlineKeyboardButton("40 سؤال",    callback_data=f"cnt_{subject}_40"),
             InlineKeyboardButton("كل الأسئلة", callback_data=f"cnt_{subject}_0"),
         ],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_main")],
     ])
 
 
-# ═══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 # معالجات الأوامر
-# ═══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    # تسجيل المستخدم في القاعدة
     await register_user(
-        user.id,
-        user.username or "",
-        user.first_name or "",
-        user.last_name or "",
+        user.id, user.username or "",
+        user.first_name or "", user.last_name or "",
     )
-    text = (
+    await update.message.reply_text(
         f"👋 أهلاً {user.first_name}!\n\n"
         "📚 بوت الاختبارات التعليمي\n"
-        "اختر موضوعاً لتبدأ الاختبار:\n"
+        "اختر موضوعاً لتبدأ:",
+        reply_markup=main_menu_keyboard(),
     )
-    await update.message.reply_text(text, reply_markup=main_menu_keyboard())
 
 
 async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "📚 القائمة الرئيسية:",
-        reply_markup=main_menu_keyboard(),
-    )
+    await update.message.reply_text("📚 القائمة الرئيسية:", reply_markup=main_menu_keyboard())
 
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,65 +242,48 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if state and state.get("session_id", -1) >= 0:
         await close_session(state["session_id"])
     if state:
-        await update.message.reply_text(
-            "⏹ تم إيقاف الاختبار.",
-            reply_markup=main_menu_keyboard(),
-        )
+        await update.message.reply_text("⏹ تم إيقاف الاختبار.", reply_markup=main_menu_keyboard())
     else:
         await update.message.reply_text("لا يوجد اختبار نشط.")
 
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if user.id not in ADMIN_IDS:
-        # إظهار إحصائيات المستخدم لنفسه
-        data = await get_user_stats(user.id)
-        if not data or not data.get("sessions"):
-            await update.message.reply_text("لم تُكمل أي اختبار بعد.")
-            return
-        total_q = data.get("total_q") or 0
-        correct = data.get("total_correct") or 0
-        wrong   = data.get("total_wrong") or 0
-        pct = round(correct / total_q * 100, 1) if total_q else 0
-        await update.message.reply_text(
-            f"📊 إحصائياتك:\n"
-            f"جلسات مكتملة: {data['sessions']}\n"
-            f"إجمالي الأسئلة: {total_q}\n"
-            f"✅ صحيح: {correct} ({pct}%)\n"
-            f"❌ خطأ: {wrong}\n"
-            f"📝 أخطاء متراكمة: {data.get('mistakes', 0)}"
-        )
+    data = await get_user_stats(user.id)
+    if not data or not data.get("sessions"):
+        await update.message.reply_text("لم تُكمل أي اختبار بعد.")
         return
-
-    # إحصائيات المسؤول
-    active = len(user_states)
+    total_q = data.get("total_q") or 0
+    correct = data.get("total_correct") or 0
+    wrong   = data.get("total_wrong") or 0
+    pct = round(correct / total_q * 100, 1) if total_q else 0
     await update.message.reply_text(
-        f"📊 إحصائيات المسؤول:\n"
-        f"👥 مستخدمون نشطون: {active}\n"
-        f"🔑 معرفك: {user.id}"
+        f"📊 إحصائياتك:\n"
+        f"جلسات مكتملة: {data['sessions']}\n"
+        f"إجمالي الأسئلة: {total_q}\n"
+        f"✅ صحيح: {correct} ({pct}%)\n"
+        f"❌ خطأ: {wrong}\n"
+        f"📝 أخطاء متراكمة: {data.get('mistakes', 0)}"
     )
 
 
-# ═══════════════════════════════════════════
-# معالجات الأزرار (CallbackQuery)
-# ═══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# معالج الأزرار (CallbackQuery)
+# ═══════════════════════════════════════════════════════════
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
+    query   = update.callback_query
     await query.answer()
-    data = query.data
+    data    = query.data
     chat_id = query.message.chat_id
     user    = query.from_user
 
-    # ── القائمة الرئيسية ──────────────────────
+    # ── رجوع للقائمة ────────────────────────────
     if data == "back_main":
-        await query.edit_message_text(
-            "📚 القائمة الرئيسية:",
-            reply_markup=main_menu_keyboard(),
-        )
+        await query.edit_message_text("📚 القائمة الرئيسية:", reply_markup=main_menu_keyboard())
         return
 
-    # ── جيولوجيا مباشرة ──────────────────────
+    # ── جيولوجيا ────────────────────────────────
     if data == "cat_geo":
         await query.edit_message_text(
             "🪨 جيولوجيا — كم عدد الأسئلة؟",
@@ -281,9 +291,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # ── حيوان 2 — يعرض القائمة الفرعية ────────
-    #    هذا هو إصلاح المشكلة الرئيسية:
-    #    كان الزر غائباً لأنه لم يكن يوجد handler له
+    # ── حيوان 2 (قائمة فرعية) ───────────────────
     if data == "cat_hay2":
         counts = await get_subject_counts()
         await query.edit_message_text(
@@ -292,7 +300,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # ── الإنجليزي — قائمة فرعية ──────────────
+    # ── إنجليزي ─────────────────────────────────
     if data == "cat_english":
         counts = await get_subject_counts()
         await query.edit_message_text(
@@ -301,7 +309,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # ── مراجعة الأخطاء ───────────────────────
+    # ── مراجعة الأخطاء ──────────────────────────
     if data == "cat_review":
         mistakes = await get_user_mistakes(user.id)
         if not mistakes:
@@ -310,11 +318,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 reply_markup=back_keyboard(),
             )
             return
-        await _start_quiz(query, context, chat_id, user, mistakes,
-                         subject="review", is_review=True)
+        await _start_normal_quiz(query, context, chat_id, user, mistakes,
+                                 subject="review", is_review=True)
         return
 
-    # ── قائمة المتصدرين ───────────────────────
+    # ── المتصدرون ───────────────────────────────
     if data == "leaderboard":
         rows = await get_leaderboard(10)
         if not rows:
@@ -328,42 +336,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text(text, reply_markup=back_keyboard())
         return
 
-    # ── إحصائياتي ────────────────────────────
+    # ── إحصائياتي ───────────────────────────────
     if data == "my_stats":
         stats = await get_user_stats(user.id)
         if not stats or not stats.get("sessions"):
-            await query.edit_message_text(
-                "لم تُكمل أي اختبار بعد.",
-                reply_markup=back_keyboard(),
-            )
+            await query.edit_message_text("لم تُكمل أي اختبار بعد.", reply_markup=back_keyboard())
             return
         total_q = stats.get("total_q") or 0
         correct = stats.get("total_correct") or 0
         wrong   = stats.get("total_wrong") or 0
         pct = round(correct / total_q * 100, 1) if total_q else 0
-        text = (
+        await query.edit_message_text(
             f"📊 إحصائياتك:\n"
             f"جلسات مكتملة: {stats['sessions']}\n"
             f"إجمالي الأسئلة: {total_q}\n"
             f"✅ صحيح: {correct} ({pct}%)\n"
             f"❌ خطأ: {wrong}\n"
-            f"📝 أخطاء متراكمة: {stats.get('mistakes', 0)}"
+            f"📝 أخطاء متراكمة: {stats.get('mistakes', 0)}",
+            reply_markup=back_keyboard(),
         )
-        await query.edit_message_text(text, reply_markup=back_keyboard())
         return
 
-    # ── اختيار موضوع فرعي (subj_...) ──────────
+    # ── اختيار موضوع فرعي (subj_...) ───────────
     if data.startswith("subj_"):
-        subject = data[5:]   # إزالة "subj_"
+        subject = data[5:]
+        label   = SUBJECTS.get(subject, subject)
         await query.edit_message_text(
-            f"📚 {SUBJECTS.get(subject, subject)}\nكم عدد الأسئلة؟",
+            f"📚 {label}\nكم عدد الأسئلة؟",
             reply_markup=count_keyboard(subject),
         )
         return
 
-    # ── اختيار عدد الأسئلة (cnt_subject_N) ────
+    # ── اختيار عدد الأسئلة (cnt_subject_N) ──────
     if data.startswith("cnt_"):
-        # cnt_<subject>_<limit>  — الموضوع قد يحتوي على "_"
         parts = data[4:].rsplit("_", 1)
         if len(parts) != 2:
             await query.answer("بيانات غير صحيحة.", show_alert=True)
@@ -374,31 +379,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         questions = await get_questions_by_subject(subject, limit)
         if not questions:
             await query.edit_message_text(
-                f"⚠️ لا توجد أسئلة في هذا الموضوع.",
+                "⚠️ لا توجد أسئلة في هذا الموضوع.",
                 reply_markup=back_keyboard(),
             )
             return
-        await _start_quiz(query, context, chat_id, user, questions,
-                         subject=subject, is_review=False)
+
+        # ── الرسمات: نظام خاص ──────────────────
+        if subject == "hay2_drawings":
+            await _start_drawings_quiz(query, context, chat_id, user, questions)
+        else:
+            await _start_normal_quiz(query, context, chat_id, user, questions,
+                                     subject=subject, is_review=False)
         return
 
 
-# ─────────────────────────────────────────
-# بدء الاختبار (مشترك)
-# ─────────────────────────────────────────
-async def _start_quiz(
-    query,
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    user,
-    questions: list,
-    subject: str,
-    is_review: bool,
-) -> None:
-    total = len(questions)
+# ═══════════════════════════════════════════════════════════
+# بدء اختبار عادي
+# ═══════════════════════════════════════════════════════════
+
+async def _start_normal_quiz(query, context, chat_id, user, questions,
+                              subject, is_review=False) -> None:
+    total      = len(questions)
     session_id = await create_session(user.id, subject, total, is_review)
 
     user_states[chat_id] = {
+        "mode":       "normal",
         "questions":  questions,
         "current":    0,
         "score":      0,
@@ -406,7 +411,6 @@ async def _start_quiz(
         "subject":    subject,
         "session_id": session_id,
         "user_id":    user.id,
-        "is_review":  is_review,
     }
 
     label = "مراجعة الأخطاء" if is_review else SUBJECTS.get(subject, subject)
@@ -416,13 +420,69 @@ async def _start_quiz(
         f"أجب بـ: أ / ب / ج / د  أو  a / b / c / d\n"
         f"للإيقاف: /stop"
     )
-    await send_question(chat_id, context)
+    await _send_normal_question(chat_id, context)
 
 
-# ─────────────────────────────────────────
-# إرسال سؤال
-# ─────────────────────────────────────────
-async def send_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ═══════════════════════════════════════════════════════════
+# بدء اختبار الرسمات
+# ═══════════════════════════════════════════════════════════
+
+async def _start_drawings_quiz(query, context, chat_id, user, questions) -> None:
+    drawings   = group_questions_by_drawing(questions)
+    total      = sum(len(d["questions"]) for d in drawings)
+    session_id = await create_session(user.id, "hay2_drawings", total, False)
+
+    user_states[chat_id] = {
+        "mode":           "drawings",
+        "drawings":       drawings,        # [ {num, title, questions:[...]}, ... ]
+        "drawing_idx":    0,               # رقم الرسمة الحالية (index في القائمة)
+        "q_in_drawing":   0,               # رقم السؤال داخل الرسمة الحالية
+        "score":          0,
+        "total":          total,
+        "session_id":     session_id,
+        "user_id":        user.id,
+    }
+
+    await query.edit_message_text(
+        f"🖼 أسئلة الرسمات\n"
+        f"عدد الرسمات: {len(drawings)}\n"
+        f"إجمالي الأسئلة: {total}\n\n"
+        f"أجب بـ: أ / ب / ج / د  أو  a / b / c / d\n"
+        f"للإيقاف: /stop"
+    )
+
+    # إعلان الرسمة الأولى ثم إرسال أول سؤال
+    await asyncio.sleep(0.8)
+    await _announce_drawing(chat_id, context, drawings[0])
+    await asyncio.sleep(0.8)
+    await _send_drawing_question(chat_id, context)
+
+
+# ═══════════════════════════════════════════════════════════
+# إعلان بداية رسمة جديدة
+# ═══════════════════════════════════════════════════════════
+
+async def _announce_drawing(chat_id: int, context, drawing: dict) -> None:
+    """يرسل رسالة تعريفية بالرسمة الجديدة وعدد أسئلتها."""
+    n     = drawing["num"]
+    title = drawing["title"]
+    count = len(drawing["questions"])
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🖼  الرسمة {n}: {title}\n"
+            f"عدد الأسئلة: {count}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# إرسال سؤال — الوضع العادي
+# ═══════════════════════════════════════════════════════════
+
+async def _send_normal_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = user_states.get(chat_id)
     if not state:
         return
@@ -435,69 +495,115 @@ async def send_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     q = state["questions"][idx]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=_format_question(q, idx + 1, total),
+    )
 
-    # بناء نص السؤال
-    question_text = q.get("question") or q.get("question_text", "")
-    option_a = q.get("option_a", "")
-    option_b = q.get("option_b", "")
-    option_c = q.get("option_c", "")
-    option_d = q.get("option_d", "")
 
-    # إذا كانت الخيارات موجودة بشكل منفصل، أضفها
-    if option_a and "أ)" not in question_text and "الف)" not in question_text:
-        body = (
-            f"{question_text}\n\n"
-            f"أ) {option_a}\n"
-            f"ب) {option_b}\n"
-            f"ج) {option_c}\n"
-            f"د) {option_d}"
-        )
+# ═══════════════════════════════════════════════════════════
+# إرسال سؤال — وضع الرسمات
+# ═══════════════════════════════════════════════════════════
+
+async def _send_drawing_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    state = user_states.get(chat_id)
+    if not state:
+        return
+
+    d_idx = state["drawing_idx"]
+    q_idx = state["q_in_drawing"]
+    drawings = state["drawings"]
+
+    # كل الرسمات انتهت
+    if d_idx >= len(drawings):
+        await finish_quiz(chat_id, context)
+        return
+
+    drawing  = drawings[d_idx]
+    qs       = drawing["questions"]
+    q        = qs[q_idx]
+    total_q  = len(qs)
+
+    # نص السؤال النظيف بدون بادئة الرسمة
+    clean_text = q.get("q_text") or q.get("question") or q.get("question_text", "")
+    opt_a = q.get("option_a", "")
+    opt_b = q.get("option_b", "")
+    opt_c = q.get("option_c", "")
+    opt_d = q.get("option_d", "")
+
+    body = f"{clean_text}\n\nأ) {opt_a}\nب) {opt_b}\nج) {opt_c}\nد) {opt_d}" \
+           if opt_a else clean_text
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"🖼 الرسمة {drawing['num']} | سؤال {q_idx + 1}/{total_q}\n\n"
+            f"📝 {body}"
+        ),
+    )
+
+
+# ─────────────────────────────────────────
+# تنسيق السؤال (عادي)
+# ─────────────────────────────────────────
+
+def _format_question(q: dict, num: int, total: int) -> str:
+    raw   = q.get("question") or q.get("question_text", "")
+    opt_a = q.get("option_a", "")
+    opt_b = q.get("option_b", "")
+    opt_c = q.get("option_c", "")
+    opt_d = q.get("option_d", "")
+
+    if opt_a and "أ)" not in raw and "الف)" not in raw:
+        body = f"{raw}\n\nأ) {opt_a}\nب) {opt_b}\nج) {opt_c}\nد) {opt_d}"
     else:
-        body = question_text
+        body = raw
 
-    text = f"📝 سؤال {idx + 1}/{total}:\n\n{body}"
-    await context.bot.send_message(chat_id=chat_id, text=text)
+    return f"📝 سؤال {num}/{total}:\n\n{body}"
 
 
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
 # إنهاء الاختبار
-# ─────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+
 async def finish_quiz(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = user_states.pop(chat_id, None)
     if not state:
         return
 
-    score   = state["score"]
-    total   = state["total"]
-    pct     = round(score / total * 100) if total else 0
-    sid     = state.get("session_id", -1)
+    score = state["score"]
+    total = state["total"]
+    pct   = round(score / total * 100) if total else 0
 
-    await close_session(sid)
+    await close_session(state.get("session_id", -1))
 
-    if pct == 100:   medal = "🏆 ممتاز! تسلط كامل."
-    elif pct >= 80:  medal = "👏 عالي جداً!"
-    elif pct >= 60:  medal = "👍 جيد!"
-    elif pct >= 40:  medal = "📚 يحتاج مراجعة."
-    else:            medal = "💪 استمر في التعلم!"
+    if pct == 100:  medal = "🏆 ممتاز! تسلط كامل."
+    elif pct >= 80: medal = "👏 عالي جداً!"
+    elif pct >= 60: medal = "👍 جيد!"
+    elif pct >= 40: medal = "📚 يحتاج مراجعة."
+    else:           medal = "💪 استمر في التعلم!"
 
-    text = (
-        f"🏁 انتهى الاختبار!\n\n"
-        f"📊 النتيجة: {score}/{total}\n"
-        f"📈 النسبة: {pct}%\n\n"
-        f"{medal}"
-    )
     await context.bot.send_message(
-        chat_id=chat_id, text=text, reply_markup=main_menu_keyboard()
+        chat_id=chat_id,
+        text=(
+            f"🏁 انتهى الاختبار!\n\n"
+            f"📊 النتيجة: {score}/{total}\n"
+            f"📈 النسبة: {pct}%\n\n"
+            f"{medal}"
+        ),
+        reply_markup=main_menu_keyboard(),
     )
 
 
-# ─────────────────────────────────────────
-# معالج الرسائل النصية (إجابات)
-# ─────────────────────────────────────────
-ANSWER_MAP = {
+# ═══════════════════════════════════════════════════════════
+# معالج الرسائل النصية (إجابات المستخدم)
+# ═══════════════════════════════════════════════════════════
+
+# خريطة تحويل الإجابة إلى حرف لاتيني (a/b/c/d)
+ANSWER_MAP: dict[str, str] = {
     "a": "a", "b": "b", "c": "c", "d": "d",
     "أ": "a", "ب": "b", "ج": "c", "د": "d",
-    "الف": "a", "ب": "b",
+    "الف": "a",
 }
 
 
@@ -513,51 +619,138 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
+    mode = state.get("mode", "normal")
+
+    if mode == "drawings":
+        await _handle_drawing_answer(chat_id, context, update, text, state)
+    else:
+        await _handle_normal_answer(chat_id, context, update, text, state)
+
+
+# ─────────────────────────────────────────
+# معالجة إجابة — وضع عادي
+# ─────────────────────────────────────────
+
+async def _handle_normal_answer(chat_id, context, update, text, state) -> None:
     idx = state["current"]
     q   = state["questions"][idx]
 
-    correct_answer = (q.get("answer") or q.get("correct_answer", "")).lower().strip()
-    user_answer    = ANSWER_MAP.get(text.lower(), text.lower()[:1])
+    correct = (q.get("answer") or q.get("correct_answer", "")).lower().strip()
+    given   = ANSWER_MAP.get(text.lower(), text.lower()[:1])
+    is_correct = given == correct
 
-    is_correct = user_answer == correct_answer
-
-    # تسجيل الإجابة في القاعدة
     await record_answer(
         session_id=state["session_id"],
         user_id=state["user_id"],
         question_id=q.get("id", 0),
-        user_answer=user_answer,
+        user_answer=given,
         is_correct=is_correct,
     )
 
     if is_correct:
         state["score"] += 1
-        explanation = q.get("explanation", "")
-        feedback = f"✅ صحيح!{chr(10) + chr(10) + '💡 ' + explanation if explanation else ''}"
+        expl = q.get("explanation", "")
+        fb = f"✅ صحيح!{chr(10) + chr(10) + '💡 ' + expl if expl else ''}"
     else:
-        # الخيار الصحيح بالنص
-        correct_letter = correct_answer.upper()
-        opt_map = {"A": q.get("option_a",""), "B": q.get("option_b",""),
-                   "C": q.get("option_c",""), "D": q.get("option_d","")}
-        correct_text = opt_map.get(correct_letter, correct_letter)
-        explanation = q.get("explanation", "")
-        feedback = (
-            f"❌ خطأ.\n"
-            f"الجواب الصحيح: {correct_letter}) {correct_text}\n"
-            f"{chr(10) + '💡 ' + explanation if explanation else ''}"
+        cl = correct.upper()
+        opts = {"A": q.get("option_a",""), "B": q.get("option_b",""),
+                "C": q.get("option_c",""), "D": q.get("option_d","")}
+        expl = q.get("explanation", "")
+        fb = (
+            f"❌ خطأ.\nالجواب الصحيح: {cl}) {opts.get(cl,'')}"
+            f"{chr(10) + chr(10) + '💡 ' + expl if expl else ''}"
         )
 
     state["current"] += 1
-    await update.message.reply_text(feedback)
+    await update.message.reply_text(fb)
     await asyncio.sleep(1.5)
-    await send_question(chat_id, context)
+    await _send_normal_question(chat_id, context)
 
 
-# ═══════════════════════════════════════════
+# ─────────────────────────────────────────
+# معالجة إجابة — وضع الرسمات
+# ─────────────────────────────────────────
+
+async def _handle_drawing_answer(chat_id, context, update, text, state) -> None:
+    d_idx    = state["drawing_idx"]
+    q_idx    = state["q_in_drawing"]
+    drawings = state["drawings"]
+
+    if d_idx >= len(drawings):
+        await finish_quiz(chat_id, context)
+        return
+
+    drawing = drawings[d_idx]
+    qs      = drawing["questions"]
+    q       = qs[q_idx]
+
+    correct = (q.get("answer") or q.get("correct_answer", "")).lower().strip()
+    given   = ANSWER_MAP.get(text.lower(), text.lower()[:1])
+    is_correct = given == correct
+
+    await record_answer(
+        session_id=state["session_id"],
+        user_id=state["user_id"],
+        question_id=q.get("id", 0),
+        user_answer=given,
+        is_correct=is_correct,
+    )
+
+    if is_correct:
+        state["score"] += 1
+        fb = "✅ صحيح!"
+    else:
+        cl   = correct.upper()
+        opts = {"A": q.get("option_a",""), "B": q.get("option_b",""),
+                "C": q.get("option_c",""), "D": q.get("option_d","")}
+        fb = f"❌ خطأ.\nالجواب الصحيح: {cl}) {opts.get(cl,'')}"
+
+    await update.message.reply_text(fb)
+    await asyncio.sleep(1.2)
+
+    # الانتقال للسؤال التالي
+    state["q_in_drawing"] += 1
+
+    # هل انتهت أسئلة هذه الرسمة؟
+    if state["q_in_drawing"] >= len(qs):
+        # ─── انتهت أسئلة الرسمة الحالية ────────────
+        score_this = sum(
+            1 for _ in range(len(qs))   # نحتاج تتبع نتيجة كل رسمة لاحقاً
+        )
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ انتهت أسئلة الرسمة {drawing['num']}: {drawing['title']}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+        )
+
+        # الانتقال للرسمة التالية
+        state["drawing_idx"]  += 1
+        state["q_in_drawing"]  = 0
+
+        await asyncio.sleep(1.5)
+
+        next_idx = state["drawing_idx"]
+        if next_idx >= len(drawings):
+            # كل الرسمات انتهت
+            await finish_quiz(chat_id, context)
+        else:
+            # إعلان الرسمة التالية
+            next_drawing = drawings[next_idx]
+            await _announce_drawing(chat_id, context, next_drawing)
+            await asyncio.sleep(1.0)
+            await _send_drawing_question(chat_id, context)
+    else:
+        # سؤال تالٍ في نفس الرسمة
+        await _send_drawing_question(chat_id, context)
+
+
+# ═══════════════════════════════════════════════════════════
 # نقطة الدخول
-# ═══════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+
 def main() -> None:
-    # تهيئة القاعدة
     logger.info("🔄 تهيئة قاعدة البيانات...")
     try:
         init_db()
@@ -566,19 +759,12 @@ def main() -> None:
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # الأوامر
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu",  menu_cmd))
     app.add_handler(CommandHandler("stop",  stop_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
 
-    # ─────────────────────────────────────────────────────
-    # معالجات الأزرار — نمط شامل يغطي كل callback_data
-    # ─────────────────────────────────────────────────────
-    # • cat_geo | cat_hay2 | cat_english | cat_review  → القائمة الرئيسية
-    # • subj_<subject>                                 → اختيار موضوع
-    # • cnt_<subject>_<limit>                          → اختيار عدد الأسئلة
-    # • leaderboard | my_stats | back_main             → وظائف أخرى
+    # معالج شامل لكل الأزرار
     app.add_handler(CallbackQueryHandler(button_handler))
 
     # الرسائل النصية (الإجابات)
