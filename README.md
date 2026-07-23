@@ -1,68 +1,82 @@
-# 🤖 بوت الاختبارات - Geology & Animals Quiz Bot
+# 🤖 بوت الاختبارات — Quiz Bot
 
-بوت تلغرام تعليمي يقدم اختبارات في مجالات الزمين‌شناسی والحيوانات.
+بوت تلغرام تعليمي يقدم اختبارات في الجيولوجيا، علم الحيوان، واللغة الإنجليزية.
 
-## المميزات
+## المواضيع المتاحة
 
-- 🪨 **اختبار سنگ‌شناسی** — 60+ سؤال في علم الصخور والمعادن
-- 🐾 **اختبار حيوان 1** — أسئلة عن الحيوانات (الجزء الأول)
-- 🦁 **اختبار حيوان 2** — أسئلة عن الحيوانات (الجزء الثاني)
-- 🏆 قائمة المتصدرين
-- 👤 لوحة تحكم للمسؤولين
+| الموضوع | المفتاح في القاعدة | عدد الأسئلة |
+|---------|-------------------|-------------|
+| 🪨 جيولوجيا | `جيولوجيا` | 836 |
+| 🦁 حيوان 2 — عام | `hay2_general` | 296 |
+| ⭐ حيوان 2 — مهم | `hay2_important` | 155 |
+| 🖼 حيوان 2 — رسوميات | `hay2_drawings` | 105 |
+| 🇬🇧 إنجليزي | `en_*` | 16 موضوع |
 
 ## المتطلبات
 
 - Python 3.13+
-- قاعدة بيانات PostgreSQL (Neon.tech أو أي خادم آخر)
+- قاعدة بيانات PostgreSQL (Neon.tech)
 
-## الإعداد
-
-### 1. المتغيرات المطلوبة (في Secrets)
+## الإعداد (Replit Secrets)
 
 | المتغير | الوصف |
 |---------|-------|
 | `BOT_TOKEN` | توكن بوت تلغرام من @BotFather |
-| `DATABASE_URL` | رابط قاعدة بيانات PostgreSQL |
-| `ADMIN_IDS` | معرفات المسؤولين (مفصولة بفاصلة) |
+| `DATABASE_URL` | رابط Neon.tech PostgreSQL |
+| `ADMIN_IDS` | معرفات المسؤولين (env var، مفصولة بفاصلة) |
 
-### 2. تثبيت المكتبات
+## تشغيل البوت
 
 ```bash
 pip install -r requirements.txt
-```
-
-### 3. تشغيل البوت
-
-```bash
 python bot.py
-```
-
-## البنية
-
-```
-├── bot.py          # الملف الرئيسي للبوت
-├── database.py     # إدارة قاعدة البيانات
-├── requirements.txt
-├── .env.example    # مثال للمتغيرات
-└── README.md
 ```
 
 ## الأوامر
 
 | الأمر | الوصف |
 |-------|-------|
-| `/start` | بدء البوت والقائمة الرئيسية |
-| `/menu` | عرض القائمة الرئيسية |
+| `/start` | القائمة الرئيسية |
+| `/menu` | القائمة الرئيسية |
 | `/stop` | إيقاف الاختبار الحالي |
-| `/stats` | إحصائيات (للمسؤول فقط) |
+| `/stats` | إحصائيات المستخدم / المسؤول |
 
-## إصلاح مشكلة زر "حيوان 2"
+## بنية الملفات
 
-المشكلة كانت في معالج callback_data — الكود القديم لم يكن يعالج `cat_animal_2` بشكل صحيح.
-الحل: استخدام regex pattern واضح في `CallbackQueryHandler`:
+```
+├── bot.py          # البوت الرئيسي — handlers وأوامر
+├── database.py     # طبقة قاعدة البيانات
+├── requirements.txt
+├── .env.example    # مثال متغيرات البيئة
+└── README.md
+```
+
+## مخطط قاعدة البيانات
+
+```
+questions          — الأسئلة (subject, question_text, option_a..d, correct_answer)
+users              — المستخدمون
+quiz_sessions      — جلسات الاختبار (correct/wrong/total)
+quiz_answers       — إجابات كل سؤال
+user_mistakes      — الأخطاء المتراكمة لكل مستخدم
+user_pending_subject — آخر موضوع مختار
+```
+
+## إصلاح مشكلة "زر حيوان 2 لا يظهر"
+
+**السبب:** كان الكود القديم لا يحتوي على handler لـ `cat_hay2`، ولم تكن فئة `animal_2` موجودة في القاعدة.
+
+**الحل:**
+1. ربط الزر بالمواضيع الحقيقية (`hay2_general`, `hay2_important`, `hay2_drawings`)
+2. إضافة `cat_hay2` handler يعرض قائمة فرعية بالأقسام الثلاثة مع عدد الأسئلة
+3. استخدام `CallbackQueryHandler(button_handler)` شامل بدلاً من patterns محدودة
 
 ```python
-app.add_handler(
-    CallbackQueryHandler(category_handler, pattern=r"^cat_(geology|animal_1|animal_2)$")
-)
+# الزر يعرض قائمة فرعية بالأقسام الثلاثة
+if data == "cat_hay2":
+    counts = await get_subject_counts()
+    await query.edit_message_text(
+        "🦁 حيوان 2 — اختر القسم:",
+        reply_markup=hay2_keyboard(counts),
+    )
 ```
