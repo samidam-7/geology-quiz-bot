@@ -125,7 +125,7 @@ def init_db() -> None:
 async def register_user(user_id: int, username: str, first_name: str, last_name: str = "") -> None:
     if not DATABASE_URL:
         return
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _register_user_sync, user_id, username, first_name, last_name)
 
 
@@ -163,7 +163,7 @@ async def get_questions_by_subject(subject: str, limit: int = 0) -> list:
     """
     if not DATABASE_URL:
         return []
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _fetch_questions_sync, subject, limit)
 
 
@@ -209,7 +209,7 @@ def _fetch_questions_sync(subject: str, limit: int = 0) -> list:
 async def get_user_mistakes(user_id: int, subject: str = None) -> list:
     if not DATABASE_URL:
         return []
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _fetch_mistakes_sync, user_id, subject)
 
 
@@ -255,7 +255,7 @@ def _fetch_mistakes_sync(user_id: int, subject: str = None) -> list:
 async def create_session(user_id: int, subject: str, total: int, is_review: bool = False) -> int:
     if not DATABASE_URL:
         return -1
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _create_session_sync, user_id, subject, total, is_review)
 
 
@@ -294,7 +294,7 @@ async def record_answer(
 ) -> None:
     if not DATABASE_URL or session_id < 0:
         return
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None, _record_answer_sync, session_id, user_id, question_id, user_answer, is_correct
     )
@@ -347,7 +347,7 @@ def _record_answer_sync(session_id, user_id, question_id, user_answer, is_correc
 async def close_session(session_id: int) -> None:
     if not DATABASE_URL or session_id < 0:
         return
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _close_session_sync, session_id)
 
 
@@ -378,7 +378,7 @@ def _close_session_sync(session_id: int):
 async def get_user_stats(user_id: int) -> dict:
     if not DATABASE_URL:
         return {}
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_user_stats_sync, user_id)
 
 
@@ -420,7 +420,7 @@ def _get_user_stats_sync(user_id: int) -> dict:
 async def get_leaderboard(limit: int = 10) -> list:
     if not DATABASE_URL:
         return []
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_leaderboard_sync, limit)
 
 
@@ -460,7 +460,7 @@ def _get_leaderboard_sync(limit: int) -> list:
 async def save_pending_subject(user_id: int, subject: str) -> None:
     if not DATABASE_URL:
         return
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _save_pending_sync, user_id, subject)
 
 
@@ -489,7 +489,7 @@ def _save_pending_sync(user_id: int, subject: str):
 async def get_pending_subject(user_id: int) -> Optional[str]:
     if not DATABASE_URL:
         return None
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_pending_sync, user_id)
 
 
@@ -518,7 +518,7 @@ def _get_pending_sync(user_id: int) -> Optional[str]:
 async def get_subject_counts() -> dict:
     if not DATABASE_URL:
         return {}
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _get_counts_sync)
 
 

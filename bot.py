@@ -278,6 +278,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = query.message.chat_id
     user    = query.from_user
 
+    # تسجيل المستخدم دائماً قبل أي عملية (يمنع foreign key error)
+    await register_user(
+        user.id, user.username or "",
+        user.first_name or "", user.last_name or "",
+    )
+
     # ── رجوع للقائمة ────────────────────────────
     if data == "back_main":
         await query.edit_message_text("📚 القائمة الرئيسية:", reply_markup=main_menu_keyboard())
@@ -751,6 +757,10 @@ async def _handle_drawing_answer(chat_id, context, update, text, state) -> None:
 # ═══════════════════════════════════════════════════════════
 
 def main() -> None:
+    logger.info("🚀 بدء تشغيل البوت...")
+    logger.info(f"BOT_TOKEN موجود: {'نعم' if BOT_TOKEN else 'لا'}")
+    logger.info(f"DATABASE_URL موجود: {'نعم' if os.getenv('DATABASE_URL') else 'لا'}")
+
     logger.info("🔄 تهيئة قاعدة البيانات...")
     try:
         init_db()
