@@ -756,18 +756,42 @@ async def _handle_drawing_answer(chat_id, context, update, text, state) -> None:
 # نقطة الدخول
 # ═══════════════════════════════════════════════════════════
 
+async def _on_startup(app) -> None:
+    """
+    يُنفَّذ تلقائياً قبل بدء الاستطلاع.
+    يحذف أي Webhook نشط لأن Telegram يرفض polling إذا كان Webhook مفعّلاً (خطأ 409).
+    """
+    try:
+        wh_info = await app.bot.get_webhook_info()
+        if wh_info.url:
+            logger.info(f"🔗 Webhook نشط مكتشف: {wh_info.url} — جارٍ الحذف...")
+            await app.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("✅ تم حذف Webhook بنجاح — البوت يعمل الآن بوضع Polling")
+        else:
+            logger.info("✅ لا يوجد Webhook نشط — وضع Polling جاهز")
+    except Exception as e:
+        logger.error(f"❌ خطأ أثناء حذف Webhook: {e}")
+
+
 def main() -> None:
     logger.info("🚀 بدء تشغيل البوت...")
     logger.info(f"BOT_TOKEN موجود: {'نعم' if BOT_TOKEN else 'لا'}")
-    logger.info(f"DATABASE_URL موجود: {'نعم' if os.getenv('DATABASE_URL') else 'لا'}")
+    db_url = os.getenv("DATABASE_URL") or os.getenv("NEON_DATABASE_URL")
+    logger.info(f"DATABASE_URL موجود: {'نعم' if db_url else 'لا'}")
 
     logger.info("🔄 تهيئة قاعدة البيانات...")
     try:
         init_db()
+        logger.info("✅ قاعدة البيانات جاهزة")
     except Exception as e:
         logger.warning(f"⚠️ تعذّر الاتصال بقاعدة البيانات: {e}")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(_on_startup)   # ← حذف Webhook تلقائياً عند الإقلاع
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu",  menu_cmd))
@@ -780,8 +804,11 @@ def main() -> None:
     # الرسائل النصية (الإجابات)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer))
 
-    logger.info("🚀 البوت يعمل الآن...")
-    app.run_polling(drop_pending_updates=True)
+    logger.info("🚀 البوت يعمل الآن في وضع Polling...")
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+    )
 
 
 if __name__ == "__main__":
