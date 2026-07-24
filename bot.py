@@ -224,10 +224,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user.id, user.username or "",
         user.first_name or "", user.last_name or "",
     )
-    await update.message.reply_text(
+    counts = await get_subject_counts()
+    geo_n   = counts.get("جيولوجيا", 0)
+    hay_n   = (counts.get("hay2_general", 0)
+               + counts.get("hay2_important", 0)
+               + counts.get("hay2_drawings", 0))
+    en_n    = sum(v for k, v in counts.items() if k.startswith("en_"))
+
+    welcome = (
         f"👋 أهلاً {user.first_name}!\n\n"
-        "📚 بوت الاختبارات التعليمي\n"
-        "اختر موضوعاً لتبدأ:",
+        "🎓 *بوت الاختبارات التعليمي*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📚 المواد المتاحة:\n\n"
+        f"🪨 جيولوجيا — {geo_n} سؤال\n"
+        f"🦁 حيوان 2 — {hay_n} سؤال\n"
+        f"🇬🇧 إنجليزي — {en_n} سؤال\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👇 اختر موضوعاً لتبدأ الاختبار:"
+    )
+    await update.message.reply_text(
+        welcome,
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
+
+
+async def quiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """أمر /quiz — يعرض قائمة المواد مباشرةً"""
+    counts = await get_subject_counts()
+    geo_n  = counts.get("جيولوجيا", 0)
+    hay_n  = (counts.get("hay2_general", 0)
+              + counts.get("hay2_important", 0)
+              + counts.get("hay2_drawings", 0))
+    en_n   = sum(v for k, v in counts.items() if k.startswith("en_"))
+
+    text = (
+        "📋 *اختر المادة التي تريد اختبارها:*\n\n"
+        f"🪨 جيولوجيا — {geo_n} سؤال\n"
+        f"🦁 حيوان 2  — {hay_n} سؤال\n"
+        f"🇬🇧 إنجليزي — {en_n} سؤال\n"
+    )
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -794,6 +833,7 @@ def main() -> None:
     )
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("quiz",  quiz_cmd))
     app.add_handler(CommandHandler("menu",  menu_cmd))
     app.add_handler(CommandHandler("stop",  stop_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
